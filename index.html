@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Wiener Run</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#87c5e8;touch-action:none;-webkit-user-select:none;user-select:none;font-family:Arial,Helvetica,sans-serif}
+canvas{display:block}
+#hud{position:fixed;top:env(safe-area-inset-top,0);left:0;right:0;display:flex;justify-content:space-between;padding:14px 18px;color:#fff;font-weight:bold;font-size:22px;text-shadow:0 2px 0 #000,0 0 6px #000;pointer-events:none}
+#overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;text-shadow:0 3px 0 #000,0 0 10px #000;pointer-events:none}
+#overlay h1{font-size:46px;margin:0 0 10px}
+#overlay p{font-size:20px;margin:6px 18px}
+#overlay .big{font-size:26px}
+</style>
+</head>
+<body>
+<div id="hud"><span id="score">0 m</span><span id="dogs">🌭 0</span></div>
+<div id="overlay"><h1>Wiener Run</h1><p class="big">The badger is coming!</p><p>Swipe ⬅️ ➡️ to switch lanes<br>Swipe ⬆️ to jump · ⬇️ to slide</p><p class="big" style="margin-top:22px">Tap to start</p><p id="best"></p></div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x87c5e8);
+scene.fog=new THREE.Fog(0x87c5e8,30,95);
+const camera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,0.1,200);
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+
+scene.add(new THREE.HemisphereLight(0xffffff,0x5a7d3a,1.1));
+const sun=new THREE.DirectionalLight(0xffffff,1.3);sun.position.set(6,14,6);sun.castShadow=true;
+sun.shadow.mapSize.set(1024,1024);Object.assign(sun.shadow.camera,{left:-12,right:12,top:12,bottom:-12,near:1,far:60});
+scene.add(sun);scene.add(sun.target);
+
+const M=c=>new THREE.MeshLambertMaterial({color:c});
+const LANE=2.2, SEG=20, NSEG=7;
+
+// ---------- world (temple path segments) ----------
+const segs=[];
+const stoneA=M(0xb8a07a), stoneB=M(0xa38c66), grass=M(0x4f8f3a), wallM=M(0x8a7458), pillarM=M(0x9c8462), leafM=M(0x2f6e2a), trunkM=M(0x6b4423);
+function makeSeg(z){
+  const g=new THREE.Group();
+  for(let i=0;i<4;i++){const t=new THREE.Mesh(new THREE.BoxGeometry(LANE*3+0.6,0.5,SEG/4),i%2?stoneA:stoneB);t.position.set(0,-0.25,-i*SEG/4-SEG/8);t.receiveShadow=true;g.add(t);}
+  const gl=new THREE.Mesh(new THREE.BoxGeometry(40,0.2,SEG),grass);gl.position.set(0,-0.6,-SEG/2);g.add(gl);
+  for(const s of[-1,1]){
+    const w=new THREE.Mesh(new THREE.BoxGeometry(0.6,0.9,SEG),wallM);w.position.set(s*(LANE*1.5+0.6),0.2,-SEG/2);w.castShadow=true;g.add(w);
+    const p=new THREE.Mesh(new THREE.BoxGeometry(0.9,3.2,0.9),pillarM);p.position.set(s*(LANE*1.5+0.8),1.4,-SEG/2);p.castShadow=true;g.add(p);
+    const cap=new THREE.Mesh(new THREE.BoxGeometry(1.2,0.3,1.2),stoneB);cap.position.set(s*(LANE*1.5+0.8),3.1,-SEG/2);g.add(cap);
+    for(let k=0;k<2;k++){const tx=s*(6+Math.random()*8),tz=-Math.random()*SEG;
+      const tr=new THREE.Mesh(new THREE.CylinderGeometry(0.25,0.35,2.4),trunkM);tr.position.set(tx,0.8,tz);g.add(tr);
+      const lf=new THREE.Mesh(new THREE.ConeGeometry(1.6,3.5,7),leafM);lf.position.set(tx,3.3,tz);lf.castShadow=true;g.add(lf);}
+  }
+  g.position.z=z;scene.add(g);g.userData.items=[];return g;
+}
+
+// ---------- obstacles & collectibles ----------
+const logM=M(0x7a4a22), barM=M(0xc0392b), barPostM=M(0x5d4037), bunM=M(0xe8b067), sausM=M(0xc2452d), mustM=new THREE.MeshBasicMaterial({color:0xffd21f});
+function makeLog(){const m=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,LANE*0.9,10),logM);m.rotation.z=Math.PI/2;m.position.y=0.4;m.castShadow=true;return {mesh:m,type:'jump'};}
+function makeBar(){const g=new THREE.Group();const b=new THREE.Mesh(new THREE.BoxGeometry(LANE*0.95,0.35,0.35),barM);b.position.y=1.35;b.castShadow=true;g.add(b);
+  for(const s of[-1,1]){const p=new THREE.Mesh(new THREE.BoxGeometry(0.2,1.5,0.2),barPostM);p.position.set(s*LANE*0.42,0.75,0);g.add(p);} return {mesh:g,type:'slide'};}
+function makeWall(){const m=new THREE.Mesh(new THREE.BoxGeometry(LANE*0.95,2.4,0.8),pillarM);m.position.y=1.2;m.castShadow=true;return {mesh:m,type:'wall'};}
+function makeDog(){const g=new THREE.Group();
+  const bun=new THREE.Mesh(new THREE.CapsuleGeometry(0.22,0.55,4,8),bunM);bun.rotation.z=Math.PI/2;g.add(bun);
+  const s=new THREE.Mesh(new THREE.CapsuleGeometry(0.12,0.75,4,8),sausM);s.rotation.z=Math.PI/2;s.position.y=0.15;g.add(s);
+  const m=new THREE.Mesh(new THREE.BoxGeometry(0.6,0.04,0.06),mustM);m.position.y=0.28;g.add(m);
+  g.position.y=0.8;return {mesh:g,type:'dog'};}
+
+let difficulty=0;
+function populate(seg,first){
+  seg.userData.items.forEach(it=>seg.remove(it.mesh));seg.userData.items=[];
+  if(first)return;
+  const rows=[-5,-15];
+  for(const rz of rows){
+    if(Math.random()<0.25+difficulty*0.4){
+      const lanes=[-1,0,1].sort(()=>Math.random()-.5);
+      const n=Math.random()<0.35+difficulty*0.3?2:1;
+      for(let i=0;i<n;i++){const r=Math.random();const it=r<0.4?makeLog():r<0.75?makeBar():makeWall();
+        it.lane=lanes[i];it.mesh.position.x=lanes[i]*LANE;it.mesh.position.z=rz;seg.add(it.mesh);seg.userData.items.push(it);}
+      const free=lanes[2];for(let k=0;k<3;k++){const d=makeDog();d.lane=free;d.mesh.position.set(free*LANE,0.8,rz+3-k*1.5);seg.add(d.mesh);seg.userData.items.push(d);}
+    } else if(Math.random()<0.6){
+      const l=[-1,0,1][Math.floor(Math.random()*3)];
+      for(let k=0;k<4;k++){const d=makeDog();d.lane=l;d.mesh.position.set(l*LANE,0.8,rz+3-k*1.8);seg.add(d.mesh);seg.userData.items.push(d);}
+    }
+  }
+}
+
+// ---------- the dachshund ----------
+const furM=M(0x8b4513), darkM=M(0x5a2a0c), noseM=M(0x111111), collarM=M(0xe0245e), eyeW=new THREE.MeshBasicMaterial({color:0xffffff}), eyeB=new THREE.MeshBasicMaterial({color:0x000000});
+const dog=new THREE.Group();
+const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.32,1.3,6,12),furM);body.rotation.x=Math.PI/2;body.position.y=0.55;body.castShadow=true;dog.add(body);
+const head=new THREE.Group();head.position.set(0,0.85,-0.95);dog.add(head);
+const skull=new THREE.Mesh(new THREE.SphereGeometry(0.3,14,12),furM);skull.castShadow=true;head.add(skull);
+const snout=new THREE.Mesh(new THREE.CapsuleGeometry(0.14,0.32,4,8),furM);snout.rotation.x=Math.PI/2;snout.position.set(0,-0.08,-0.33);head.add(snout);
+const nose=new THREE.Mesh(new THREE.SphereGeometry(0.07,8,8),noseM);nose.position.set(0,-0.06,-0.56);head.add(nose);
+const ears=[];for(const s of[-1,1]){const e=new THREE.Mesh(new THREE.CapsuleGeometry(0.1,0.3,4,8),darkM);e.position.set(s*0.27,-0.12,0.02);e.rotation.z=s*0.25;head.add(e);ears.push(e);
+  const ew=new THREE.Mesh(new THREE.SphereGeometry(0.07,8,8),eyeW);ew.position.set(s*0.14,0.08,-0.24);head.add(ew);
+  const eb=new THREE.Mesh(new THREE.SphereGeometry(0.04,8,8),eyeB);eb.position.set(s*0.14,0.08,-0.3);head.add(eb);}
+const collar=new THREE.Mesh(new THREE.TorusGeometry(0.3,0.05,6,16),collarM);collar.position.set(0,0.7,-0.75);dog.add(collar);
+const tail=new THREE.Mesh(new THREE.CapsuleGeometry(0.06,0.45,4,6),furM);tail.position.set(0,0.8,0.95);tail.rotation.x=-0.7;dog.add(tail);
+const legs=[];for(const [x,z] of[[-0.2,-0.55],[0.2,-0.55],[-0.2,0.55],[0.2,0.55]]){const l=new THREE.Mesh(new THREE.CapsuleGeometry(0.08,0.18,4,6),darkM);l.position.set(x,0.18,z);l.castShadow=true;dog.add(l);legs.push(l);}
+scene.add(dog);
+
+// ---------- the badger ----------
+const badger=new THREE.Group();
+const bgBody=new THREE.Mesh(new THREE.SphereGeometry(0.75,14,12),M(0x3d3d3d));bgBody.scale.set(1,0.75,1.4);bgBody.position.y=0.65;bgBody.castShadow=true;badger.add(bgBody);
+const bgHead=new THREE.Mesh(new THREE.SphereGeometry(0.45,14,12),M(0xeeeeee));bgHead.scale.set(1,0.85,1.2);bgHead.position.set(0,0.85,-1.05);badger.add(bgHead);
+const stripe=new THREE.Mesh(new THREE.SphereGeometry(0.46,14,12),M(0x111111));stripe.scale.set(0.35,0.9,1.25);stripe.position.set(0,0.88,-1.04);badger.add(stripe);
+for(const s of[-1,1]){const st=new THREE.Mesh(new THREE.SphereGeometry(0.46,14,12),M(0x111111));st.scale.set(0.18,0.8,1.1);st.position.set(s*0.3,0.86,-1.04);badger.add(st);
+  const ey=new THREE.Mesh(new THREE.SphereGeometry(0.07,8,8),new THREE.MeshBasicMaterial({color:0xff2222}));ey.position.set(s*0.17,1.0,-1.5);badger.add(ey);}
+const bgLegs=[];for(const [x,z] of[[-0.45,-0.6],[0.45,-0.6],[-0.45,0.6],[0.45,0.6]]){const l=new THREE.Mesh(new THREE.CapsuleGeometry(0.14,0.25,4,6),M(0x222222));l.position.set(x,0.25,z);badger.add(l);bgLegs.push(l);}
+badger.scale.setScalar(0.72);scene.add(badger);
+
+// ---------- state ----------
+let state='ready',speed,dist,dogsGot,lane,targetX,vy,y,sliding,slideT,badgerGap,stumbleT,t=0;
+let best=+(localStorage.wrBest||0);
+const $=id=>document.getElementById(id);
+function reset(){
+  segs.forEach(s=>scene.remove(s));segs.length=0;
+  for(let i=0;i<NSEG;i++){const s=makeSeg(SEG-i*SEG);populate(s,i<3);segs.push(s);}
+  speed=11;dist=0;dogsGot=0;lane=0;targetX=0;vy=0;y=0;sliding=false;slideT=0;badgerGap=4.6;stumbleT=0;difficulty=0;
+  dog.position.set(0,0,0);dog.rotation.set(0,0,0);
+}
+reset();
+$('best').textContent=best?('Best: '+best+' m'):'';
+
+function start(){if(state==='play')return;if(state==='dead'){reset();}state='play';$('overlay').style.display='none';}
+function die(){state='dead';best=Math.max(best,Math.floor(dist));localStorage.wrBest=best;if(navigator.vibrate)navigator.vibrate(150);
+  $('overlay').innerHTML=`<h1>The badger got you!</h1><p class="big">${Math.floor(dist)} m · 🌭 ${dogsGot}</p><p>Best: ${best} m</p><p class="big" style="margin-top:22px">Tap to run again</p>`;
+  $('overlay').style.display='flex';deadAt=performance.now();}
+let deadAt=0;
+function act(a){
+  if(state!=='play'){if(state==='dead'&&performance.now()-deadAt<600)return;start();return;}
+  if(a==='left'&&lane>-1)lane--;
+  if(a==='right'&&lane<1)lane++;
+  if(a==='up'&&y<=0.001&&!sliding){vy=9.5;}
+  if(a==='down'){if(y>0.01)vy=-14;sliding=true;slideT=0.75;}
+  targetX=lane*LANE;
+}
+let sx=0,sy=0,touched=false;
+addEventListener('touchstart',e=>{const p=e.touches[0];sx=p.clientX;sy=p.clientY;touched=true;e.preventDefault();},{passive:false});
+addEventListener('touchmove',e=>{if(!touched)return;const p=e.touches[0];const dx=p.clientX-sx,dy=p.clientY-sy;
+  if(Math.hypot(dx,dy)>30){touched=false;act(Math.abs(dx)>Math.abs(dy)?(dx>0?'right':'left'):(dy>0?'down':'up'));}e.preventDefault();},{passive:false});
+addEventListener('touchend',e=>{if(touched){touched=false;if(state!=='play')act('tap');}e.preventDefault();},{passive:false});
+addEventListener('mousedown',()=>{if(state!=='play')act('tap');});
+addEventListener('keydown',e=>{const k={ArrowLeft:'left',ArrowRight:'right',ArrowUp:'up',ArrowDown:'down',KeyA:'left',KeyD:'right',KeyW:'up',KeyS:'down',Space:'up'}[e.code];if(k)act(k);});
+
+// ---------- loop ----------
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000);last=now;t+=dt;
+  if(state==='play'){
+    speed=Math.min(30,11+dist/60);difficulty=Math.min(1,dist/1500);
+    const dz=speed*dt;dist+=dz;
+    for(const s of segs){s.position.z+=dz;}
+    if(segs[0].position.z>2*SEG){const s=segs.shift();s.position.z=segs[segs.length-1].position.z-SEG;populate(s,false);segs.push(s);}
+    // physics
+    vy-=28*dt;y+=vy*dt;if(y<0){y=0;vy=0;}
+    if(sliding){slideT-=dt;if(slideT<=0)sliding=false;}
+    dog.position.x+= (targetX-dog.position.x)*Math.min(1,dt*14);
+    dog.position.y=y;
+    // collisions
+    for(const s of segs){for(const it of s.userData.items){
+      if(it.hit)continue;
+      const wz=s.position.z+it.mesh.position.z; if(wz<-1.3||wz>1.3)continue;
+      if(Math.abs(it.lane*LANE-dog.position.x)>LANE*0.55)continue;
+      if(it.type==='dog'){if(y<1.6){it.hit=true;it.mesh.visible=false;dogsGot++;}}
+      else if(it.type==='jump'&&y<0.75){it.hit=true;stumble();}
+      else if(it.type==='slide'&&!sliding){it.hit=true;stumble();}
+      else if(it.type==='wall'){it.hit=true;die();}
+    }}
+    if(stumbleT>0)stumbleT-=dt; else badgerGap=Math.min(4.6,badgerGap+dt*0.5);
+    // animation
+    const run=t*speed*0.9;
+    legs.forEach((l,i)=>{l.rotation.x=Math.sin(run+(i%2?Math.PI:0)+(i>1?Math.PI/2:0))*0.9;});
+    ears.forEach((e,i)=>{e.rotation.x=Math.sin(run*0.5+i)*0.5-0.3;});
+    tail.rotation.z=Math.sin(t*18)*0.5;
+    dog.scale.y=sliding?0.55:1; body.position.y=sliding?0.4:0.55+Math.abs(Math.sin(run))*0.06;
+    dog.rotation.x=y>0?-0.15:0;
+    bgLegs.forEach((l,i)=>{l.rotation.x=Math.sin(t*16+(i%2?Math.PI:0))*0.8;});
+  } else if(state==='ready'){
+    const run=t*6;legs.forEach((l,i)=>{l.rotation.x=Math.sin(run+(i%2?Math.PI:0))*0.3;});tail.rotation.z=Math.sin(t*10)*0.6;
+  }
+  // badger follows
+  badger.position.x+=(dog.position.x-badger.position.x)*Math.min(1,dt*4);
+  badger.position.z=badgerGap; badger.position.y=Math.abs(Math.sin(t*10))*0.15;
+  // camera
+  const camX=dog.position.x*0.6;
+  camera.position.x+=(camX-camera.position.x)*Math.min(1,dt*6);
+  const portrait=camera.aspect<1; camera.fov=portrait?78:62; camera.updateProjectionMatrix();
+  camera.position.y=(portrait?7.6:5.4)+y*0.35; camera.position.z=portrait?8.6:8.2;
+  camera.lookAt(camera.position.x*0.8,0.4,portrait?-9:-7);
+  sun.position.set(dog.position.x+6,14,6);sun.target.position.set(dog.position.x,0,-4);
+  $('score').textContent=Math.floor(dist)+' m';$('dogs').textContent='🌭 '+dogsGot;
+  renderer.render(scene,camera);requestAnimationFrame(frame);
+}
+function stumble(){
+  if(navigator.vibrate)navigator.vibrate(60);
+  if(badgerGap<3.6){badgerGap=1.3;die();return;}
+  badgerGap=2.6;stumbleT=3;
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
