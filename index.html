@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Wiener Run</title>
 <style>
-html,body{margin:0;height:100%;overflow:hidden;background:#87c5e8;touch-action:none;-webkit-user-select:none;user-select:none;font-family:Arial,Helvetica,sans-serif}
+html,body{margin:0;height:100%;overflow:hidden;background:#f2c79a;touch-action:none;-webkit-user-select:none;user-select:none;font-family:Arial,Helvetica,sans-serif}
 canvas{display:block}
 #hud{position:fixed;top:env(safe-area-inset-top,0);left:0;right:0;display:flex;justify-content:space-between;padding:14px 18px;color:#fff;font-weight:bold;font-size:22px;text-shadow:0 2px 0 #000,0 0 6px #000;pointer-events:none}
 #overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;text-shadow:0 3px 0 #000,0 0 10px #000;pointer-events:none}
@@ -18,50 +18,80 @@ canvas{display:block}
 <body>
 <div id="hud"><span id="score">0 m</span><span id="dogs">🌭 0</span></div>
 <div id="overlay"><h1>Wiener Run</h1><p class="big">The badger is coming!</p><p>Swipe ⬅️ ➡️ to switch lanes<br>Swipe ⬆️ to jump · ⬇️ to slide</p><p class="big" style="margin-top:22px">Tap to start</p><p id="best"></p></div>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
 <script type="module">
 import * as THREE from 'three';
+import {Sky} from 'three/addons/objects/Sky.js';
+import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
+import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
+import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
+import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 
 const renderer=new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.setSize(innerWidth,innerHeight);
-renderer.shadowMap.enabled=true;
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=0.75;renderer.outputColorSpace=THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
 const scene=new THREE.Scene();
-scene.background=new THREE.Color(0x87c5e8);
-scene.fog=new THREE.Fog(0x87c5e8,30,95);
+const sky=new Sky();sky.scale.setScalar(1000);scene.add(sky);
+const su=sky.material.uniforms;su.turbidity.value=4;su.rayleigh.value=1.6;su.mieCoefficient.value=0.006;su.mieDirectionalG.value=0.85;
+const sunDir=new THREE.Vector3().setFromSphericalCoords(1,THREE.MathUtils.degToRad(80),THREE.MathUtils.degToRad(160));su.sunPosition.value.copy(sunDir);
+scene.fog=new THREE.FogExp2(0xe9b98a,0.0105);
+const pmrem=new THREE.PMREMGenerator(renderer);scene.environment=pmrem.fromScene(new RoomEnvironment(),0.04).texture;
 const camera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,0.1,200);
-addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+const composer=new EffectComposer(renderer);composer.addPass(new RenderPass(scene,camera));
+const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),0.35,0.6,0.92);composer.addPass(bloom);composer.addPass(new OutputPass());
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);});
 
-scene.add(new THREE.HemisphereLight(0xffffff,0x5a7d3a,1.1));
-const sun=new THREE.DirectionalLight(0xffffff,1.3);sun.position.set(6,14,6);sun.castShadow=true;
-sun.shadow.mapSize.set(1024,1024);Object.assign(sun.shadow.camera,{left:-12,right:12,top:12,bottom:-12,near:1,far:60});
+scene.add(new THREE.HemisphereLight(0xffd9b0,0x3b4a2a,0.7));
+const sun=new THREE.DirectionalLight(0xffc98a,3.2);sun.position.set(6,14,6);sun.castShadow=true;sun.shadow.bias=-0.0005;sun.shadow.normalBias=0.02;
+sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-12,right:12,top:12,bottom:-12,near:1,far:60});
 scene.add(sun);scene.add(sun.target);
 
-const M=c=>new THREE.MeshLambertMaterial({color:c});
+function canvasTex(w,h,draw,rep){const c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d');draw(g,w,h);
+  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=8;if(rep)t.repeat.set(rep[0],rep[1]);return t;}
+const rnd=(a,b)=>a+Math.random()*(b-a);
+function noiseFill(g,w,h,base,vary,n){g.fillStyle=base;g.fillRect(0,0,w,h);for(let i=0;i<n;i++){const v=rnd(-vary,vary);g.fillStyle=`rgba(${v>0?255:0},${v>0?255:0},${v>0?255:0},${Math.abs(v)})`;g.fillRect(rnd(0,w),rnd(0,h),rnd(1,4),rnd(1,4));}}
+const stoneTex=canvasTex(512,512,(g,w,h)=>{noiseFill(g,w,h,'#9c8a6c',0.12,9000);
+  const rows=4,cols=3;for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const off=r%2?w/cols/2:0;const x=c*w/cols+off,y=r*h/rows;
+    g.fillStyle=`hsl(${rnd(30,40)},${rnd(18,28)}%,${rnd(42,55)}%)`;g.globalAlpha=0.55;g.fillRect(x+4,y+4,w/cols-8,h/rows-8);g.globalAlpha=1;
+    g.strokeStyle='rgba(40,28,15,.75)';g.lineWidth=5;g.strokeRect(x+2,y+2,w/cols-4,h/rows-4);
+    for(let k=0;k<6;k++){g.strokeStyle='rgba(30,20,10,.25)';g.lineWidth=1;g.beginPath();g.moveTo(x+rnd(5,w/cols),y+rnd(5,h/rows));g.lineTo(x+rnd(5,w/cols),y+rnd(5,h/rows));g.stroke();}
+    g.fillStyle='rgba(70,110,40,.35)';for(let k=0;k<25;k++)g.fillRect(x+rnd(0,w/cols),y+rnd(-3,3),rnd(2,6),rnd(2,5));}},[1,1]);
+const grassTex=canvasTex(256,256,(g,w,h)=>{noiseFill(g,w,h,'#3f7a2c',0.18,14000);for(let i=0;i<1500;i++){g.strokeStyle=`hsla(${rnd(80,110)},55%,${rnd(20,45)}%,.8)`;g.beginPath();const x=rnd(0,w),y=rnd(0,h);g.moveTo(x,y);g.lineTo(x+rnd(-2,2),y-rnd(3,8));g.stroke();}},[12,6]);
+const wallTex=canvasTex(256,256,(g,w,h)=>{noiseFill(g,w,h,'#7d6a50',0.15,8000);g.strokeStyle='rgba(30,20,10,.6)';g.lineWidth=3;for(let y=0;y<h;y+=32){g.beginPath();g.moveTo(0,y);g.lineTo(w,y);g.stroke();for(let x=(y/32%2)*32;x<w;x+=64){g.beginPath();g.moveTo(x,y);g.lineTo(x,y+32);g.stroke();}}},[6,1]);
+const barkTex=canvasTex(64,256,(g,w,h)=>{noiseFill(g,w,h,'#5b3a1f',0.2,3000);for(let x=0;x<w;x+=6){g.strokeStyle='rgba(20,10,0,.5)';g.beginPath();g.moveTo(x+rnd(-2,2),0);g.lineTo(x+rnd(-2,2),h);g.stroke();}});
+const furTex=canvasTex(256,256,(g,w,h)=>{noiseFill(g,w,h,'#8b4a1e',0.1,2000);for(let i=0;i<5000;i++){g.strokeStyle=`hsla(${rnd(18,28)},${rnd(55,75)}%,${rnd(22,42)}%,.6)`;g.lineWidth=1;const x=rnd(0,w),y=rnd(0,h);g.beginPath();g.moveTo(x,y);g.lineTo(x+rnd(-1,1),y+rnd(3,7));g.stroke();}},[2,2]);
+const M=(c,o={})=>new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:0.85,metalness:0},o));
 const LANE=2.2, SEG=20, NSEG=7;
 
 // ---------- world (temple path segments) ----------
 const segs=[];
-const stoneA=M(0xb8a07a), stoneB=M(0xa38c66), grass=M(0x4f8f3a), wallM=M(0x8a7458), pillarM=M(0x9c8462), leafM=M(0x2f6e2a), trunkM=M(0x6b4423);
+const stoneA=M(0xffffff,{map:stoneTex,roughness:0.95}), stoneB=M(0xe8ded0,{map:stoneTex,roughness:0.95}), grass=M(0xffffff,{map:grassTex,roughness:1}), wallM=M(0xffffff,{map:wallTex}), pillarM=M(0xd8c7a8,{map:wallTex}), leafM=M(0x2e6a2a,{roughness:0.8,flatShading:true}), trunkM=M(0xffffff,{map:barkTex});
 function makeSeg(z){
   const g=new THREE.Group();
   for(let i=0;i<4;i++){const t=new THREE.Mesh(new THREE.BoxGeometry(LANE*3+0.6,0.5,SEG/4),i%2?stoneA:stoneB);t.position.set(0,-0.25,-i*SEG/4-SEG/8);t.receiveShadow=true;g.add(t);}
-  const gl=new THREE.Mesh(new THREE.BoxGeometry(40,0.2,SEG),grass);gl.position.set(0,-0.6,-SEG/2);g.add(gl);
+  const gl=new THREE.Mesh(new THREE.BoxGeometry(80,0.2,SEG),grass);gl.receiveShadow=true;gl.position.set(0,-0.6,-SEG/2);g.add(gl);
   for(const s of[-1,1]){
     const w=new THREE.Mesh(new THREE.BoxGeometry(0.6,0.9,SEG),wallM);w.position.set(s*(LANE*1.5+0.6),0.2,-SEG/2);w.castShadow=true;g.add(w);
     const p=new THREE.Mesh(new THREE.BoxGeometry(0.9,3.2,0.9),pillarM);p.position.set(s*(LANE*1.5+0.8),1.4,-SEG/2);p.castShadow=true;g.add(p);
     const cap=new THREE.Mesh(new THREE.BoxGeometry(1.2,0.3,1.2),stoneB);cap.position.set(s*(LANE*1.5+0.8),3.1,-SEG/2);g.add(cap);
-    for(let k=0;k<2;k++){const tx=s*(6+Math.random()*8),tz=-Math.random()*SEG;
-      const tr=new THREE.Mesh(new THREE.CylinderGeometry(0.25,0.35,2.4),trunkM);tr.position.set(tx,0.8,tz);g.add(tr);
-      const lf=new THREE.Mesh(new THREE.ConeGeometry(1.6,3.5,7),leafM);lf.position.set(tx,3.3,tz);lf.castShadow=true;g.add(lf);}
+    const fl=new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.08,0.35,8),M(0x333333,{metalness:0.6,roughness:0.4}));fl.position.set(s*(LANE*1.5+0.8),3.45,-SEG/2);g.add(fl);
+    const flame=new THREE.Mesh(new THREE.ConeGeometry(0.16,0.45,8),new THREE.MeshBasicMaterial({color:0xffaa33}));flame.position.set(s*(LANE*1.5+0.8),3.8,-SEG/2);flame.userData.flame=true;g.add(flame);
+    for(let k=0;k<4;k++){const tx=s*rnd(5.5,22),tz=-Math.random()*SEG,sc=rnd(0.8,1.6);
+      const tr=new THREE.Mesh(new THREE.CylinderGeometry(0.22*sc,0.38*sc,2.6*sc,8),trunkM);tr.position.set(tx,1.2*sc-0.5,tz);tr.castShadow=true;g.add(tr);
+      for(let j=0;j<3;j++){const lf=new THREE.Mesh(new THREE.ConeGeometry((1.9-j*0.45)*sc,(2.2-j*0.3)*sc,8),leafM);lf.position.set(tx,(2.1+j*1.1)*sc,tz);lf.rotation.y=rnd(0,3);lf.castShadow=true;g.add(lf);}}
+    for(let k=0;k<3;k++){const r=new THREE.Mesh(new THREE.DodecahedronGeometry(rnd(0.3,0.8)),M(0x8a8178,{flatShading:true}));r.position.set(s*rnd(4.5,9),0,-rnd(0,SEG));r.rotation.set(rnd(0,3),rnd(0,3),0);r.castShadow=true;g.add(r);}
+    const ivy=new THREE.Mesh(new THREE.BoxGeometry(0.95,1.6,0.95),M(0x3d7a2e,{roughness:1}));ivy.scale.set(1.02,0.5,1.02);ivy.position.set(s*(LANE*1.5+0.8),0.4,-SEG/2);g.add(ivy);
   }
   g.position.z=z;scene.add(g);g.userData.items=[];return g;
 }
 
 // ---------- obstacles & collectibles ----------
-const logM=M(0x7a4a22), barM=M(0xc0392b), barPostM=M(0x5d4037), bunM=M(0xe8b067), sausM=M(0xc2452d), mustM=new THREE.MeshBasicMaterial({color:0xffd21f});
+const logM=M(0xffffff,{map:barkTex}), barM=M(0xb3261e,{roughness:0.5}), barPostM=M(0x4a3426), bunM=M(0xe0a35a,{roughness:0.7}), sausM=M(0xb83a22,{roughness:0.35}), mustM=new THREE.MeshStandardMaterial({color:0xffd21f,emissive:0x664400,roughness:0.4});
 function makeLog(){const m=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,LANE*0.9,10),logM);m.rotation.z=Math.PI/2;m.position.y=0.4;m.castShadow=true;return {mesh:m,type:'jump'};}
 function makeBar(){const g=new THREE.Group();const b=new THREE.Mesh(new THREE.BoxGeometry(LANE*0.95,0.35,0.35),barM);b.position.y=1.35;b.castShadow=true;g.add(b);
   for(const s of[-1,1]){const p=new THREE.Mesh(new THREE.BoxGeometry(0.2,1.5,0.2),barPostM);p.position.set(s*LANE*0.42,0.75,0);g.add(p);} return {mesh:g,type:'slide'};}
@@ -92,7 +122,7 @@ function populate(seg,first){
 }
 
 // ---------- the dachshund ----------
-const furM=M(0x8b4513), darkM=M(0x5a2a0c), noseM=M(0x111111), collarM=M(0xe0245e), eyeW=new THREE.MeshBasicMaterial({color:0xffffff}), eyeB=new THREE.MeshBasicMaterial({color:0x000000});
+const furM=M(0xffffff,{map:furTex,roughness:0.75}), darkM=M(0x4a2008,{roughness:0.8}), noseM=M(0x0a0a0a,{roughness:0.2}), collarM=M(0xe0245e,{roughness:0.4,metalness:0.2}), eyeW=M(0xffffff,{roughness:0.1}), eyeB=M(0x000000,{roughness:0.05});
 const dog=new THREE.Group();
 const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.32,1.3,6,12),furM);body.rotation.x=Math.PI/2;body.position.y=0.55;body.castShadow=true;dog.add(body);
 const head=new THREE.Group();head.position.set(0,0.85,-0.95);dog.add(head);
@@ -109,7 +139,7 @@ scene.add(dog);
 
 // ---------- the badger ----------
 const badger=new THREE.Group();
-const bgBody=new THREE.Mesh(new THREE.SphereGeometry(0.75,14,12),M(0x3d3d3d));bgBody.scale.set(1,0.75,1.4);bgBody.position.y=0.65;bgBody.castShadow=true;badger.add(bgBody);
+const bgBody=new THREE.Mesh(new THREE.SphereGeometry(0.75,24,18),M(0x3a3a3a,{map:furTex,roughness:0.9}));bgBody.scale.set(1,0.75,1.4);bgBody.position.y=0.65;bgBody.castShadow=true;badger.add(bgBody);
 const bgHead=new THREE.Mesh(new THREE.SphereGeometry(0.45,14,12),M(0xeeeeee));bgHead.scale.set(1,0.85,1.2);bgHead.position.set(0,0.85,-1.05);badger.add(bgHead);
 const stripe=new THREE.Mesh(new THREE.SphereGeometry(0.46,14,12),M(0x111111));stripe.scale.set(0.35,0.9,1.25);stripe.position.set(0,0.88,-1.04);badger.add(stripe);
 for(const s of[-1,1]){const st=new THREE.Mesh(new THREE.SphereGeometry(0.46,14,12),M(0x111111));st.scale.set(0.18,0.8,1.1);st.position.set(s*0.3,0.86,-1.04);badger.add(st);
@@ -154,7 +184,7 @@ addEventListener('keydown',e=>{const k={ArrowLeft:'left',ArrowRight:'right',Arro
 // ---------- loop ----------
 let last=performance.now();
 function frame(now){
-  const dt=Math.min(0.05,(now-last)/1000);last=now;t+=dt;
+  const dt=Math.max(0,Math.min(0.05,(now-last)/1000));last=now;t+=dt;
   if(state==='play'){
     speed=Math.min(30,11+dist/60);difficulty=Math.min(1,dist/1500);
     const dz=speed*dt;dist+=dz;
@@ -196,9 +226,11 @@ function frame(now){
   const portrait=camera.aspect<1; camera.fov=portrait?78:62; camera.updateProjectionMatrix();
   camera.position.y=(portrait?7.6:5.4)+y*0.35; camera.position.z=portrait?8.6:8.2;
   camera.lookAt(camera.position.x*0.8,0.4,portrait?-9:-7);
-  sun.position.set(dog.position.x+6,14,6);sun.target.position.set(dog.position.x,0,-4);
+  sun.position.set(dog.position.x+sunDir.x*20,sunDir.y*20+6,sunDir.z*20);sun.target.position.set(dog.position.x,0,-4);
+  for(const sg of segs)for(const ch of sg.children){if(ch.userData.flame){ch.scale.y=0.8+Math.random()*0.4;}}
+  for(const sg of segs)for(const it of sg.userData.items)if(it.type==='dog')it.mesh.rotation.y+=dt*3;
   $('score').textContent=Math.floor(dist)+' m';$('dogs').textContent='🌭 '+dogsGot;
-  renderer.render(scene,camera);requestAnimationFrame(frame);
+  composer.render();requestAnimationFrame(frame);
 }
 function stumble(){
   if(navigator.vibrate)navigator.vibrate(60);
